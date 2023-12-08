@@ -1,0 +1,72 @@
+---
+title: "Bob Ross Paintings"
+author: "Wei Yue Hung"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r setup, results='hide', message=FALSE}
+library(tidyverse)
+library(knitr)
+library(rvest) # for webscraping
+library(magrittr) # for getting objects out of lists
+library(broom) # tidy model outputs
+library(performance) # for model evaluation
+library(tidytext) # for ordering factors within larger categories (only needed for pretty plotting)
+
+theme_set(theme_light())
+
+```
+
+## Reading and cleaning the data
+```{r read-and-clean-data}
+bob_ross <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2023/2023-02-21/bob_ross.csv')
+glimpse(bob_ross)
+
+#first column not needed
+bob_ross <- select(bob_ross, -1)
+
+#mutate variables.
+bob_ross <- bob_ross |> 
+  mutate(
+    across(Black_Gesso:Alizarin_Crimson, as.logical),
+    season = factor(season),
+    episode = factor(episode)
+  )
+glimpse(bob_ross)
+```
+
+## Exploratory data analysis
+```{r plot_colors_episode_season, fig.width = 14, fig.height = 8}
+summary(bob_ross$num_colors)
+
+ggplot(bob_ross, aes(x = episode, y = num_colors, fill = episode)) +
+  geom_col() +
+  facet_wrap(~ season) +
+  labs(x = " ", y = "Number of Colors", title = "Number of Colors used per Episode by Season")
+
+summary_num_colors <- bob_ross %>%
+  group_by(season) %>%
+  summarise(sum(num_colors), mean(num_colors), median(num_colors), max(num_colors), min(num_colors), sd(num_colors))
+kable(summary_num_colors)
+```
+Looking for thread of the number of colors used
+At first glace, we can see that less colors were used in season one compared to the other seasons. 
+
+```{r distribution_of_colors}
+color_columns <- bob_ross[, 9:26]
+color_frequency <- colSums(color_columns)
+
+color_data <- data.frame(color = names(color_frequency), frequency = color_frequency)
+
+color_data <- color_data[order(-color_data$frequency), ]
+
+ggplot(color_data, aes(x = reorder(color, -frequency), y = frequency)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Distribution of Colors",
+       x = "Color",
+       y = "Frequency") +
+  theme(axis.text.x = element_text(angle = 90))
+
+  
+```
