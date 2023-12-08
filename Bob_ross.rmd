@@ -68,6 +68,4 @@ ggplot(color_data, aes(x = reorder(color, -frequency), y = frequency)) +
        y = "Frequency") +
   theme(axis.text.x = element_text(angle = 90))
 
-
-  
 ```
