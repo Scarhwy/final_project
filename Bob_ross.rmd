@@ -8,42 +8,32 @@ date: "`r Sys.Date()`"
 ```{r setup, results='hide', message=FALSE}
 library(tidyverse)
 library(knitr)
-library(rvest) # for webscraping
-library(magrittr) # for getting objects out of lists
-library(broom) # tidy model outputs
-library(performance) # for model evaluation
-library(tidytext) # for ordering factors within larger categories (only needed for pretty plotting)
-
-theme_set(theme_light())
+library(dplyr)
+library(widyr)
+library(ggraph)
+library(igraph)
+theme_set(theme_minimal())
 
 ```
 
 ## Reading and cleaning the data
 ```{r read-and-clean-data}
 bob_ross <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2023/2023-02-21/bob_ross.csv')
-glimpse(bob_ross)
-
-#first column not needed
-bob_ross <- select(bob_ross, -1)
-
-#mutate variables.
-bob_ross <- bob_ross |> 
-  mutate(
-    across(Black_Gesso:Alizarin_Crimson, as.logical),
-    season = factor(season),
-    episode = factor(episode)
-  )
+hex_color <- c('#4E1500', '#000000', '#DB0000', '#8A3324', '#FFEC00', '#5F2E1F', '#CD5C5C', '#FFB800', '#000000', '#FFFFFF', '#000000', '#0C0040', '#102E3C', '#021E44', '#0A3410', '#FFFFFF', '#221B15', '#C79B00')
+# Checking the data structure 
 glimpse(bob_ross)
 ```
 
-## Exploratory data analysis
-```{r plot_colors_episode_season, fig.width = 14, fig.height = 8}
+## Exploratory Data Analysis
+```{r plot_colors_episode_season, fig.width = 12, fig.height = 14}
 summary(bob_ross$num_colors)
 
-ggplot(bob_ross, aes(x = episode, y = num_colors, fill = episode)) +
+ggplot(bob_ross, aes(x = episode, y = num_colors)) +
   geom_col() +
-  facet_wrap(~ season) +
-  labs(x = " ", y = "Number of Colors", title = "Number of Colors used per Episode by Season")
+  geom_text(aes(label = num_colors), vjust = 1.5)+
+  facet_wrap(~ season, ncol = 4) +
+  labs(x = " ", y = "Number of Colors", title = "Number of Colors used per Episode by Season") +
+  scale_x_continuous(breaks = 1:13)
 
 summary_num_colors <- bob_ross %>%
   group_by(season) %>%
@@ -54,18 +44,100 @@ Looking for thread of the number of colors used
 At first glace, we can see that less colors were used in season one compared to the other seasons. 
 
 ```{r distribution_of_colors}
-color_columns <- bob_ross[, 9:26]
-color_frequency <- colSums(color_columns)
+# Gathering data relevant to our analyses 
+bob_ross_long <- bob_ross %>%
+  select(painting_index, season, episode, painting_title, Black_Gesso:Alizarin_Crimson) %>%
+  pivot_longer(cols = Black_Gesso:Alizarin_Crimson, names_to = "Color", values_to = "Used") %>%
+  filter(Used) %>%
+  mutate(Color = str_replace_all(Color, "_", " "))
 
-color_data <- data.frame(color = names(color_frequency), frequency = color_frequency)
-
-color_data <- color_data[order(-color_data$frequency), ]
-
-ggplot(color_data, aes(x = reorder(color, -frequency), y = frequency)) +
-  geom_bar(stat = "identity") +
+# Plotting the colors by how often they are used
+bob_ross_long %>%
+  count(Color, sort = TRUE) %>%
+  mutate(Color = fct_reorder(Color, n)) %>%
+  ggplot(aes(Color, n, fill = Color)) +
+  geom_col() +
   labs(title = "Distribution of Colors",
        x = "Color",
        y = "Frequency") +
-  theme(axis.text.x = element_text(angle = 90))
+  coord_flip()
+```
+```{r colors by season,  fig.width = 14, fig.height = 14}
+# Plotting the colors used by season
+ggplot(bob_ross_long, aes(x = Color, fill = Color)) +
+  geom_bar(color = "black", position = "dodge") +
+  geom_text(stat = 'count', aes(label = after_stat(count)), vjust = -.5) +
+  expand_limits(y = 15) + 
+  labs(title = "Number of Times Each Color was Used per Season",
+       x = "Color",
+       y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_blank()) + 
+  facet_wrap(~ season, ncol = 4) +
+  scale_fill_manual(values = hex_color)
+```
+We can see that in season 1 Bob Ross started painting with 8 colors (Black Gesso, Bright Red, Cadmium Yellow, Phthalo Blue, Phthalo Green, Prussian Blue, Sap Green, Titanium White, and Van Dyke Brown) and new colors were slowly introduced as the show progressed through the seasons.
+
+```{r line-plot,  fig.width = 14, fig.height = 14}
+# Plotting percentage of times each color was used in each season
+by_color <- bob_ross_long %>%
+  group_by(season) %>%
+  mutate(number_episode = n_distinct(episode)) %>%
+  count(season, Color, number_episode, sort = TRUE) %>%
+  mutate(percent_used = n / number_episode) %>%
+  group_by(Color) %>%
+  mutate(total_color = sum(n)) %>%
+  ungroup()
+  
+  
+ggplot(by_color, aes(season, percent_used, color = Color)) +
+  geom_point(show.legend = FALSE) +
+  geom_line(size = 1, show.legend = FALSE) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  expand_limits(y = 0) +  
+  facet_wrap(~ Color, ncol = 3) +
+  scale_x_continuous(breaks = 1:31, limits = c(1, 31)) +
+  theme(panel.grid.minor.y = element_blank(),
+        panel.grid.minor.x = element_blank())
+```
+
+This shows us the color trends by color and we can see some patterns emerging such as Phthalo Green becoming less used after the earlier seasons and Midnight Blue becoming more used after season 4. 
+
+It seems that Burnt Umber was replaced with midnight black at season 6.
+
+The usage pattern of Cadmium Yellow, Yellow Ochre, and Indian Yellow seem pretty similar as well.
+
+Therefore, we would check the correlation of the usage of each color with each other. 
+
+## Correlation
+```{r correlations}
+# Checking Correlation of each color
+correlation <- bob_ross_long %>%
+  add_count(Color) %>%
+  pairwise_cor(Color, painting_index, sort = TRUE)
+kable(correlation, digits = 3)
 
 ```
+The correlation between Burnt Umber and Midnight Black is the lowest amonst all the colors at -0.728. Which suggests that when one of these two colors was used, the other colors was less likely to be used.
+
+The correlation between Dark Sienna and Midnight Black was the highest at 0.780. This suggests that they were frequently used together.
+
+We see Yellow Ochre and Indian Yellow correlates with each other moderately with a 0.583 correlation. Cadmium Yellow and Yellow Ochre also correlated moderately at 0.551.Additionally the correaltion between Indian Yellow and Cadmium Yellow is 0.499 which is also a moderate correlation. This suggests that these colors were used pretty frequently together.
+
+With this, we can start analyzing if clusters of colors exist
+
+```{r clusters, fig.width = 16, fig.height = 10}
+correlation %>%
+  head(50) %>%
+  graph_from_data_frame() %>%
+  ggraph() +
+  geom_edge_link(aes(alpha = correlation)) +
+  geom_node_point() +
+  geom_node_text(aes(label = name), vjust = 1, hjust = .5)
+```
+
+Now we can see some clusters of colors.
+
+We can see one cluster of darker brown tonned colors correlating moderately with each other on the right consisting of Van Dyke Brown, Dark Sienna, and Midnight Black. 
+
+We can also see a whole cluster of color with the 3 aforementioned yellows (Cadmium Yellow, Yellow Ochro, and Indian Yellow) with some additions of reds and greens (Bright Red, Alizarin Crimson, and Sap Green). These are the brighter colors (apart from the whites) that Bob Ross uses. 
